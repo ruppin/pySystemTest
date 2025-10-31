@@ -1,0 +1,58 @@
+# Example scenarios for api_tester.py
+# Structure:
+# scenarios:
+#   - name: "Scenario name"
+#     steps:
+#       - name: "Step name"
+#         action:
+#           method: GET|POST|PUT|DELETE
+#           url: "http://..."
+#           headers:                    # optional
+#             Authorization: "Bearer ..."
+#           body:                       # optional, for POST/PUT
+#             key: value
+#         verification:
+#           status_code: 200
+#           json_assertions:
+#             - path: "$.data.id"
+#               expected_value: 123
+#             - path: "$.data.user.name"
+#               expected_value: "alice"
+
+scenarios:
+  - name: "Get public info"
+    steps:
+      - name: "GET root health"
+        action:
+          method: GET
+          url: "https://httpbin.org/status/200"
+        verification:
+          status_code: 200
+
+  - name: "Basic JSON verification"
+    steps:
+      - name: "GET sample JSON"
+        action:
+          method: GET
+          url: "https://httpbin.org/json"
+        verification:
+          status_code: 200
+          json_assertions:
+            - path: "$.slideshow.title"
+              expected_value: "Sample Slide Show"
+
+  - name: "Create resource (example)"
+    steps:
+      - name: "POST create echo"
+        action:
+          method: POST
+          url: "https://httpbin.org/post"
+          headers:
+            Content-Type: "application/json"
+          body:
+            example: "value"
+        verification:
+          status_code: 200
+          json_assertions:
+            - path: "$.json.example"
+              expected_value: "value"

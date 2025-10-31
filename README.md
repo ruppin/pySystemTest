@@ -1,0 +1,121 @@
+.
+├── README.md                  # usage + examples
+├── requirements.txt           # runtime deps (requests, pyyaml, jsonpath-ng)
+├── .gitignore
+├── pyproject.toml / setup.cfg # optional packaging
+├── scenarios.yaml             # optional root sample or keep under examples/
+├── examples/
+│   └── sample-scenarios.yaml
+├── src/
+│   └── pyrestv2/
+│       ├── __init__.py
+│       ├── api_tester.py     # main logic (load YAML, run scenarios)
+│       ├── rest_client.py    # your RestClient class (refactor into package)
+│       └── utils.py          # helpers (json, reporting, jsonpath helpers)
+├── bin/                       # small CLI wrapper scripts (optional)
+│   └── run-tests.sh
+├── tests/
+│   ├── test_api_tester.py
+│   └── fixtures/
+│       └── fixture-scenarios.yaml
+├── docs/                      # usage notes, extension ideas
+└── .github/
+    └── workflows/
+        └── ci.yml             # run pytest + lint
+
+
+
+Install on Windows (recommended in a venv):
+
+Create & activate venv:
+python -m venv .venv
+.venv\Scripts\activate
+Upgrade pip and install:
+python -m pip install --upgrade pip
+python -m pip install -r requirements.txt
+If you intentionally need a typing backport for Python 2.7, add the correct package "typing" (but only for Py2).
+
+
+Quick steps to run the tester on Windows (concise):
+
+1. Open PowerShell (or cmd) and change to project root:
+
+cd "c:\Users\Motrola\OneDrive\Documents\GitProjectsLocal\pySystemTest"
+
+
+2. Create & activate a virtualenv:
+
+python -m venv .venv
+# PowerShell
+.\.venv\Scripts\Activate.ps1
+# or cmd
+# .\.venv\Scripts\activate.bat
+
+3. Install dependencies:
+
+python -m pip install --upgrade pip
+python -m pip install -r requirements.txt
+
+
+4. Run the tester (default looks for scenarios.yaml in current directory). Examples:
+
+# use default scenarios.yaml in project root
+python src\api_tester.py
+
+# or specify a scenarios file
+python src\api_tester.py --scenarios examples\sample-scenarios.yaml
+
+# full path example
+python "c:\Users\Motrola\OneDrive\Documents\GitProjectsLocal\pySystemTest\src\api_tester.py" -s "c:\path\to\scenarios.yaml"
+
+
+5. Exit codes:
+0 = all scenarios passed
+2 = one or more scenarios failed
+3 = fatal error (e.g., invalid YAML or runtime exception)
+
+
+# Running tests 
+
+Quick steps (Windows) to run tests for this project.
+
+1. From project root, activate venv and install deps:
+cd "c:\Users\Motrola\OneDrive\Documents\GitProjectsLocal\pySystemTest"
+# PowerShell venv activation
+.\.venv\Scripts\Activate.ps1
+python -m pip install --upgrade pip
+python -m pip install -r requirements.txt
+
+
+2. Run all tests with pytest:
+# run all tests (quiet)
+pytest -q
+
+# run with verbose output
+pytest -v
+
+
+3. Run a single test file or a single test:
+# single file
+pytest tests\test_api_tester.py -q
+
+# single test in file
+pytest tests\test_api_tester.py::test_verify_response_status_and_json_success -q
+
+
+4. Use the helper script (PowerShell):
+.\bin\run-tests.ps1
+
+5. If you get import errors for "src", ensure you run pytest from the project root or set PYTHONPATH:
+# PowerShell
+$env:PYTHONPATH = (Get-Location)
+pytest -q
+
+Or in cmd:
+set PYTHONPATH=%CD%
+pytest -q
+
+Exit codes: 0 = success, non-zero = failures/errors.
+
+USE the following command 
+    python -m pytest -q
