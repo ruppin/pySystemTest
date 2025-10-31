@@ -12,6 +12,7 @@ import sys
 import json
 from typing import Any, Dict, List, Tuple, Optional
 import re
+import copy
 
 import requests
 import yaml
@@ -22,6 +23,9 @@ STORAGE_NOTE = "Scenarios loaded from YAML file"
 
 # simple $key placeholder pattern (no braces, single level keys)
 _SIMPLE_PLACEHOLDER_RE = re.compile(r"\$([A-Za-z0-9_]+)")
+
+# runtime-only substitution: $var -> value from runtime dict (preserve type when string is exact placeholder)
+_RUNTIME_PLACEHOLDER_RE = re.compile(r"\$([A-Za-z0-9_]+)")
 
 
 def load_config(path: Optional[str]) -> Dict[str, Any]:
@@ -58,13 +62,37 @@ def _substitute_in_obj(obj: Any, cfg: Dict[str, Any]) -> Any:
             if cfg and key in cfg:
                 return cfg[key]
             return obj
-        # otherwise replace each occurrence with stringified value (or leave if missing)
+        # otherwise replace each occurrence with str(value) (or leave if missing)
         def _repl(m):
             key = m.group(1)
             if cfg and key in cfg:
                 return str(cfg[key])
             return m.group(0)
         return _SIMPLE_PLACEHOLDER_RE.sub(_repl, obj)
+    return obj
+
+
+def _substitute_with_runtime(obj: Any, runtime: Dict[str, Any]) -> Any:
+    """Recursively substitute $var placeholders using runtime dict only."""
+    if isinstance(obj, dict):
+        return {k: _substitute_with_runtime(v, runtime) for k, v in obj.items()}
+    if isinstance(obj, list):
+        return [_substitute_with_runtime(v, runtime) for v in obj]
+    if isinstance(obj, str):
+        if not runtime:
+            return obj
+        matches = list(_RUNTIME_PLACEHOLDER_RE.finditer(obj))
+        if not matches:
+            return obj
+        if len(matches) == 1 and matches[0].start() == 0 and matches[0].end() == len(obj):
+            key = matches[0].group(1)
+            if key in runtime:
+                return runtime[key]
+            return obj
+        def _repl(m):
+            key = m.group(1)
+            return str(runtime.get(key, m.group(0)))
+        return _RUNTIME_PLACEHOLDER_RE.sub(_repl, obj)
     return obj
 
 
@@ -138,6 +166,14 @@ def _match_expected(actual: Any, expected: Any) -> bool:
 def verify_response(response: requests.Response, step: Dict[str, Any]) -> Tuple[bool, Optional[str]]:
     """
     Verify response against step['verification'].
+    Supports:
+      - status_code (existing)
+      - json_assertions: list of assertion objects. Each object may include:
+        - path: JSONPath (required)
+        - expected_value: value to match (existing behaviour)
+        - exists: true/false  -> assert presence/absence of the path
+        - not_null: true     -> assert path exists and no matched value is null
+        - contains: value    -> for arrays/objects, assert value is contained
     Returns (True, None) on success, (False, message) on failure.
     """
     verification = step.get("verification", {})
@@ -154,7 +190,6 @@ def verify_response(response: requests.Response, step: Dict[str, Any]) -> Tuple[
 
         for assertion in json_assertions:
             path = assertion.get("path")
-            expected_value = assertion.get("expected_value")
             if not path:
                 return False, "Invalid assertion: missing 'path'"
 
@@ -164,46 +199,147 @@ def verify_response(response: requests.Response, step: Dict[str, Any]) -> Tuple[
                 return False, f"Invalid JSONPath '{path}': {e}"
 
             matches = [m.value for m in expr.find(body)]
+
+            # exists check
+            if "exists" in assertion:
+                want = bool(assertion.get("exists"))
+                if want and not matches:
+                    return False, f"JSON path '{path}' not found (expected to exist)"
+                if (not want) and matches:
+                    return False, f"JSON path '{path}' expected to be absent but found {matches!r}"
+                continue
+
+            # not_null check
+            if assertion.get("not_null"):
+                if not matches:
+                    return False, f"JSON path '{path}' not found (not_null asserted)"
+                if any(m is None for m in matches):
+                    return False, f"JSON path '{path}' contains null value(s): {matches!r}"
+                continue
+
+            # contains check (for arrays or objects)
+            if "contains" in assertion:
+                expected = assertion.get("contains")
+                if not matches:
+                    return False, f"JSON path '{path}' not found (contains asserted)"
+                ok = False
+                for m in matches:
+                    if isinstance(m, (list, tuple)):
+                        if expected in m:
+                            ok = True
+                            break
+                    elif isinstance(m, dict):
+                        # allow checking values or keys
+                        if expected in m.values() or expected in m.keys():
+                            ok = True
+                            break
+                    else:
+                        if _match_expected(m, expected):
+                            ok = True
+                            break
+                if not ok:
+                    return False, f"JSON path '{path}' does not contain {expected!r}; values: {matches!r}"
+                continue
+
+            # expected_value (existing behaviour)
+            if "expected_value" in assertion:
+                expected = assertion.get("expected_value")
+                if not matches:
+                    return False, f"JSON path '{path}' not found"
+                matched_any = any(_match_expected(mv, expected) for mv in matches)
+                if not matched_any:
+                    return False, f"JSON path '{path}' expected {expected!r} but got {matches!r}"
+                continue
+
+            # default: require presence
             if not matches:
-                return False, f"JSON path '{path}' not found in response"
-            # if multiple matches, consider success if any matches expected_value
-            matched_any = any(_match_expected(mv, expected_value) for mv in matches)
-            if not matched_any:
-                # include actual values in message for debugging
-                return False, f"JSON path '{path}' expected {expected_value!r} but got {matches!r}"
+                return False, f"JSON path '{path}' not found"
 
     return True, None
 
 
-def run_scenario(scenario: Dict[str, Any]) -> Tuple[bool, Optional[Dict[str, Any]]]:
+def _capture_from_response(resp: requests.Response, capture_spec: Dict[str, Any]) -> Tuple[bool, Optional[Tuple[str, Any]]]:
     """
-    Run the given scenario (dict with 'name' and 'steps').
-    Returns (True, None) on success, or (False, {step_index, step_name, error, response_info}) on failure.
+    Perform a single capture described by capture_spec and return (ok, (name, value)) or (False, (name, error_msg)).
+    capture_spec fields:
+      - name: variable name to store (required)
+      - source: "json" (default), "header", "status"
+      - path: JSONPath when source=json, header name when source=header
+    """
+    name = capture_spec.get("name")
+    if not name:
+        return False, (None, "capture entry missing 'name'")
+    source = (capture_spec.get("source") or "json").lower()
+    if source == "status":
+        return True, (name, resp.status_code)
+    if source == "header":
+        header_name = capture_spec.get("path") or capture_spec.get("header")
+        if not header_name:
+            return False, (name, "capture header requires 'path' (header name)")
+        # case-insensitive
+        for k, v in resp.headers.items():
+            if k.lower() == header_name.lower():
+                return True, (name, v)
+        return False, (name, f"header '{header_name}' not found")
+    # default: json
+    body = _extract_json(resp)
+    if body is None:
+        return False, (name, "response body not JSON")
+    path = capture_spec.get("path")
+    if not path:
+        return False, (name, "capture json requires 'path' (JSONPath)")
+    try:
+        expr = jsonpath_parse(path)
+    except Exception as e:
+        return False, (name, f"invalid JSONPath '{path}': {e}")
+    matches = [m.value for m in expr.find(body)]
+    if not matches:
+        return False, (name, f"JSON path '{path}' not found")
+    # store single value if one match else the list
+    val = matches[0] if len(matches) == 1 else matches
+    return True, (name, val)
+
+
+def run_scenario(scenario: Dict[str, Any], config: Optional[Dict[str, Any]] = None) -> Tuple[bool, Optional[Dict[str, Any]]]:
+    """
+    Run the given scenario. Supports runtime captures:
+      - Add "capture" array to steps to extract values for later steps.
+    Returns same (True/False, info) as before.
     """
     name = scenario.get("name", "<unnamed>")
     steps = scenario.get("steps", []) or []
     print(f"\n=== Running scenario: {name} ({len(steps)} step(s)) ===")
     session = requests.Session()
+    runtime_vars: Dict[str, Any] = {}  # updated from captures
     for idx, step in enumerate(steps, start=1):
         step_name = step.get("name", f"step-{idx}")
+        # apply runtime substitutions to the step (do not mutate original)
+        step_exec = _substitute_with_runtime(copy.deepcopy(step), runtime_vars)
+        # Note: config substitutions were applied at load-time; if you prefer config-time here, merge config into runtime or call _substitute_in_obj
         print(f"  [{idx}/{len(steps)}] -> {step_name} ... ", end="", flush=True)
         try:
-            resp = execute_api_call(step, session=session)
+            resp = execute_api_call(step_exec, session=session)
         except Exception as e:
             print("ERROR")
             return False, {"step_index": idx, "step_name": step_name, "error": f"Request failed: {e}"}
 
-        ok, err = verify_response(resp, step)
+        ok, err = verify_response(resp, step_exec)
         if ok:
             print("OK")
+            # process captures (if any) after successful step
+            for capture_spec in (step_exec.get("capture") or []):
+                c_ok, c_res = _capture_from_response(resp, capture_spec)
+                if c_ok:
+                    var_name, var_val = c_res
+                    runtime_vars[var_name] = var_val
+                else:
+                    # capture failure should fail the scenario
+                    _, err_msg = c_res
+                    return False, {"step_index": idx, "step_name": step_name, "error": f"Capture failed for '{capture_spec.get('name')}': {err_msg}"}
             continue
         else:
             print("FAILED")
-            # capture minimal response info for report
-            resp_info = {
-                "status_code": resp.status_code,
-                "body_snippet": None
-            }
+            resp_info = {"status_code": resp.status_code, "body_snippet": None}
             try:
                 resp_json = _extract_json(resp)
                 resp_info["body_snippet"] = json.dumps(resp_json, indent=2)[:1000]

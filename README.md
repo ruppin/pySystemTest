@@ -126,3 +126,40 @@ Run on command line:
     python .\src\api_tester.py -c .\scenarios_config.yaml
 
     python src\api_tester.py -s scenarios.yaml -c scenarios_config.yaml
+
+
+
+    json assertions extensions
+
+    scenarios:
+  - name: "Check not-null fields"
+    steps:
+      - name: "Ensure id is present and not null"
+        action:
+          method: GET
+          url: "$base_url/get-item/1"
+        verification:
+          status_code: 200
+          json_assertions:
+            - path: "$.data.id"
+              not_null: true
+
+      - name: "Ensure optional list contains element"
+        action:
+          method: GET
+          url: "$base_url/items"
+        verification:
+          status_code: 200
+          json_assertions:
+            - path: "$.items"
+              contains: "widget-a"
+
+      - name: "Ensure field exists (even if null allowed)"
+        action:
+          method: GET
+          url: "$base_url/meta"
+        verification:
+          status_code: 200
+          json_assertions:
+            - path: "$.meta.timestamp"
+              exists: true
