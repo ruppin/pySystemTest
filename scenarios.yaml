@@ -1,31 +1,12 @@
-# Example scenarios for api_tester.py
-# Structure:
-# scenarios:
-#   - name: "Scenario name"
-#     steps:
-#       - name: "Step name"
-#         action:
-#           method: GET|POST|PUT|DELETE
-#           url: "http://..."
-#           headers:                    # optional
-#             Authorization: "Bearer ..."
-#           body:                       # optional, for POST/PUT
-#             key: value
-#         verification:
-#           status_code: 200
-#           json_assertions:
-#             - path: "$.data.id"
-#               expected_value: 123
-#             - path: "$.data.user.name"
-#               expected_value: "alice"
-
+# Example scenarios using simple $key placeholders (substituted from config YAML)
 scenarios:
   - name: "Get public info"
     steps:
       - name: "GET root health"
         action:
           method: GET
-          url: "https://httpbin.org/status/200"
+          url: "$base_url/status/200"
+          timeout: "$timeout"
         verification:
           status_code: 200
 
@@ -34,7 +15,7 @@ scenarios:
       - name: "GET sample JSON"
         action:
           method: GET
-          url: "https://httpbin.org/json"
+          url: "$base_url/json"
         verification:
           status_code: 200
           json_assertions:
@@ -46,13 +27,74 @@ scenarios:
       - name: "POST create echo"
         action:
           method: POST
-          url: "https://httpbin.org/post"
+          url: "$base_url/post"
           headers:
             Content-Type: "application/json"
+            X-Custom: "$x_custom"
           body:
             example: "value"
+          timeout: "$timeout"
         verification:
           status_code: 200
           json_assertions:
             - path: "$.json.example"
               expected_value: "value"
+
+  - name: "Auth + params + verify example"
+    steps:
+      - name: "GET with params and basic auth (tuple)"
+        action:
+          method: GET
+          url: "$base_url/get"
+          params:
+            q: "search"
+            limit: 5
+          auth: ["$auth_user", "$auth_pass"]
+          verify: true
+          timeout: "$timeout"
+        verification:
+          status_code: 200
+          json_assertions:
+            - path: "$.args.q"
+              expected_value: "search"
+
+  - name: "Client cert and custom CA"
+    steps:
+      - name: "POST with client cert (separate key) and CA bundle"
+        action:
+          method: POST
+          url: "https://example-mtls.local/endpoint"
+          headers:
+            Content-Type: "application/json"
+          body:
+            action: "create"
+          cert: ["$client_cert", "$client_key"]
+          verify: "$ca_bundle"
+          timeout: "$timeout"
+        verification:
+          status_code: 201
+          json_assertions:
+            - path: "$.result.status"
+              expected_value: "created"
+
+  - name: "Auth dict form + proxies + no redirects"
+    steps:
+      - name: "POST with auth dict, proxy and disallow redirects"
+        action:
+          method: POST
+          url: "$base_url/post"
+          headers:
+            Content-Type: "application/json"
+          body:
+            sample: true
+          auth:
+            type: basic
+            user: "$auth_user"
+            pass: "$auth_pass"
+          proxies:
+            http: "http://127.0.0.1:3128"
+            https: "http://127.0.0.1:3128"
+          allow_redirects: false
+          timeout: "$timeout"
+        verification:
+          status_code: 200

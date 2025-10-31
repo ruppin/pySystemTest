@@ -1,0 +1,10 @@
+# Simple key → value mapping used for $key substitution
+base_url: "https://httpbin.org"
+api_host: "httpbin.org"
+timeout: 15
+x_custom: "abc123"
+auth_user: "service"
+auth_pass: "s3cr3t"
+client_cert: "C:/certs/client.crt"
+client_key: "C:/certs/client.key"
+ca_bundle: "C:/certs/ca-bundle.pem"

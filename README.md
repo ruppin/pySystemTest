@@ -119,3 +119,10 @@ Exit codes: 0 = success, non-zero = failures/errors.
 
 USE the following command 
     python -m pytest -q
+
+
+Run on command line:
+
+    python .\src\api_tester.py -c .\scenarios_config.yaml
+
+    python src\api_tester.py -s scenarios.yaml -c scenarios_config.yaml
