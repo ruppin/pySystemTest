@@ -1,0 +1,20 @@
+{
+    "version": "0.2.0",
+    "configurations": [
+        {
+            "name": "Run API Tester",
+            "type": "python",
+            "request": "launch",
+            "program": "${workspaceFolder}/src/api_tester.py",
+            "args": [
+                "-s", "scenarios.yaml",
+                "-c", "config.yaml",
+                "-t", "test_data.csv",
+                "--report_html", "report.html",
+                "--verbose"
+            ],
+            "console": "integratedTerminal",
+            "justMyCode": true
+        }
+    ]
+}

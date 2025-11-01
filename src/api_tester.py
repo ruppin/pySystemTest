@@ -550,7 +550,7 @@ def load_scenarios_aggregate(path: str, config: Optional[Dict[str, Any]] = None)
     raise ValueError(f"Provided scenarios path is not a file, directory, or matching glob: {path}")
 
 
-def run_scenario_collect(scenario: Dict[str, Any]) -> Tuple[bool, Optional[Dict[str, Any]], Dict[str, Any]]:
+def run_scenario_collect(scenario: Dict[str, Any], test_data: Optional[Dict[str, Dict[str, str]]] = None) -> Tuple[bool, Optional[Dict[str, Any]], Dict[str, Any]]:
     """
     Run scenario and return (ok, info_on_failure_or_none, scenario_report).
     scenario_report contains per-step request/response/verification/timing data.
@@ -558,6 +558,14 @@ def run_scenario_collect(scenario: Dict[str, Any]) -> Tuple[bool, Optional[Dict[
     name = scenario.get("name", "<unnamed>")
     steps = scenario.get("steps", []) or []
     session = requests.Session()
+
+    # Get test data for this scenario if available
+    scenario_data = {}
+    if test_data and name in test_data:
+        scenario_data = test_data[name]
+        print(f"\n=== Running scenario: {name} ({len(steps)} step(s)) with test data ===")
+    else:
+        print(f"\n=== Running scenario: {name} ({len(steps)} step(s)) ===")
 
     report = {
         "name": name,
@@ -576,6 +584,12 @@ def run_scenario_collect(scenario: Dict[str, Any]) -> Tuple[bool, Optional[Dict[
                                        "request": None, "response": None, "verification": None, "error": None}
         # prepare substituted step
         step_to_run = deepcopy(step)
+        
+        # First substitute test data values if available
+        if scenario_data:
+            step_to_run = _substitute_in_obj(step_to_run, scenario_data)
+            
+        # Then substitute response values
         step_to_run = _substitute_response_placeholders(step_to_run, responses_by_name, responses_by_index, responses_list)
 
         # record request-ish info
