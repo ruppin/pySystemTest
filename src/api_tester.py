@@ -15,7 +15,7 @@ import re
 from copy import deepcopy
 import time
 import traceback
-
+import csv
 import requests
 import yaml
 from jsonpath_ng import parse as jsonpath_parse
@@ -400,14 +400,46 @@ def _substitute_response_placeholders(obj, responses_by_name, responses_by_index
     return obj
 
 
-def run_scenario(scenario: Dict[str, Any]) -> Tuple[bool, Optional[Dict[str, Any]]]:
+def load_test_data(csv_path: Optional[str]) -> Dict[str, Dict[str, str]]:
     """
-    Run the given scenario (dict with 'name' and 'steps').
-    Returns (True, None) on success, or (False, {step_index, step_name, error, response_info}) on failure.
+    Load test data from CSV file. Returns dict of scenario_name -> {column: value}
+    Skip empty values, so each scenario only gets its relevant data.
     """
+    if not csv_path:
+        return {}
+    
+    test_data = {}
+    try:
+        with open(csv_path, 'r', encoding='utf-8') as f:
+            reader = csv.DictReader(f)
+            for row in reader:
+                scenario_name = row.pop('scenario_name', None)
+                if not scenario_name:
+                    continue
+                # Filter out empty values and store
+                test_data[scenario_name] = {
+                    k: v for k, v in row.items() 
+                    if v is not None and v.strip() != ''
+                }
+    except Exception as e:
+        raise ValueError(f"Failed to load test data from {csv_path}: {e}")
+    
+    return test_data
+
+
+def run_scenario(scenario: Dict[str, Any], test_data: Optional[Dict[str, Dict[str, str]]] = None) -> Tuple[bool, Optional[Dict[str, Any]]]:
+    """Run scenario with optional test data substitution."""
     name = scenario.get("name", "<unnamed>")
     steps = scenario.get("steps", []) or []
-    print(f"\n=== Running scenario: {name} ({len(steps)} step(s)) ===")
+    
+    # Get test data for this scenario if available
+    scenario_data = {}
+    if test_data and name in test_data:
+        scenario_data = test_data[name]
+        print(f"\n=== Running scenario: {name} ({len(steps)} step(s)) with test data ===")
+    else:
+        print(f"\n=== Running scenario: {name} ({len(steps)} step(s)) ===")
+    
     session = requests.Session()
 
     # response context storages
@@ -419,9 +451,17 @@ def run_scenario(scenario: Dict[str, Any]) -> Tuple[bool, Optional[Dict[str, Any
         step_name = step.get("name", f"step-{idx}")
         print(f"  [{idx}/{len(steps)}] -> {step_name} ... ", end="", flush=True)
 
-        # create a substituted copy of step using previous responses
+        # Create substituted copy of step
         step_to_run = deepcopy(step)
-        step_to_run = _substitute_response_placeholders(step_to_run, responses_by_name, responses_by_index, responses_list)
+        
+        # First substitute test data values
+        if scenario_data:
+            step_to_run = _substitute_in_obj(step_to_run, scenario_data)
+            
+        # Then substitute response values (existing logic)
+        step_to_run = _substitute_response_placeholders(
+            step_to_run, responses_by_name, responses_by_index, responses_list
+        )
 
         try:
             resp = execute_api_call(step_to_run, session=session)
@@ -645,11 +685,13 @@ def main_cli():
     parser.add_argument("--report_json", help="Write detailed JSON report to this file (optional)", default=None)
     parser.add_argument("--report_html", help="Write detailed HTML report to this file (optional)", default=None)
     parser.add_argument("--verbose", "-v", action="store_true", help="Print per-step report details to console")
+    parser.add_argument("--test-data", "-t", help="Path to CSV file containing test data", default=None)
     args = parser.parse_args()
-    os.environ["REQUESTS_CA_BUNDLE"] = r"C:\Program Files\Microsoft SDKs\Azure\CLI2\Lib\site-packages\certifi\cacert.pem"
 
     try:
         cfg = load_config(args.config) if args.config else {}
+        test_data = load_test_data(args.test_data) if args.test_data else {}
+        
         data = load_scenarios_aggregate(args.scenarios, config=cfg)
         scenarios = data.get("scenarios", [])
         total = len(scenarios)
@@ -659,7 +701,7 @@ def main_cli():
         detailed_report = {"scenarios_total": total, "scenarios": []}
 
         for scen in scenarios:
-            ok, info, scen_report = run_scenario_collect(scen)
+            ok, info, scen_report = run_scenario_collect(scen, test_data=test_data)
             detailed_report["scenarios"].append(scen_report)
             if ok:
                 passed += 1
