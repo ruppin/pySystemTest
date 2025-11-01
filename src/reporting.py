@@ -1,5 +1,3 @@
-```python
-// filepath: c:\Users\Motrola\OneDrive\Documents\GitProjectsLocal\pySystemTest\src\reporting.py
 from jinja2 import Template
 import json
 from typing import Any, Dict
@@ -112,4 +110,3 @@ def generate_html_report(report: Dict[str, Any], out_path: str):
     html = tmpl.render(report=report, passed=passed, failed=failed)
     with open(out_path, "w", encoding="utf-8") as fh:
         fh.write(html)
-```
