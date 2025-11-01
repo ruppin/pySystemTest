@@ -636,7 +636,8 @@ def main(scenarios_path: str):
     sys.exit(0 if failed == 0 else 2)
 
 
-if __name__ == "__main__":
+def main_cli():
+    """Main CLI entry point for both script and packaged versions."""
     parser = argparse.ArgumentParser(description="Simple API scenario tester (YAML-driven).")
     parser.add_argument("--scenarios", "-s", help="Path to scenarios YAML or directory", default="scenarios.yaml")
     parser.add_argument("--config", "-c", help="Path to key→value config YAML for $key substitution", default=None)
@@ -705,3 +706,7 @@ if __name__ == "__main__":
     except Exception as exc:
         print(f"Fatal error: {exc}")
         sys.exit(3)
+
+
+if __name__ == "__main__":
+    main_cli()

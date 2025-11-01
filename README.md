@@ -205,3 +205,11 @@ Notes
 -c is optional config for $key substitution.
 -v prints per-step info to console.
 Ensure src\reporting.py exists (the HTML generator) and Jinja2 is installed.
+
+
+# Install dependencies including PyInstaller
+.\.venv\Scripts\Activate.ps1
+python -m pip install -r requirements.txt
+
+# Build executable
+pyinstaller pySystemTest.spec
