@@ -17,6 +17,9 @@ from copy import deepcopy
 import requests
 import yaml
 from jsonpath_ng import parse as jsonpath_parse
+import os
+import glob
+import pathlib
 
 
 STORAGE_NOTE = "Scenarios loaded from YAML file"
@@ -449,6 +452,62 @@ def run_scenario(scenario: Dict[str, Any]) -> Tuple[bool, Optional[Dict[str, Any
     return True, None
 
 
+def _gather_yaml_files_from_dir(dir_path: str) -> List[str]:
+    """Return sorted list of .yml/.yaml files under dir_path (recursive)."""
+    p = pathlib.Path(dir_path)
+    if not p.is_dir():
+        return []
+    # collect both .yml and .yaml
+    files = []
+    files.extend(sorted([str(x) for x in p.rglob("*.yml") if x.is_file()]))
+    files.extend(sorted([str(x) for x in p.rglob("*.yaml") if x.is_file()]))
+    # de-duplicate and keep deterministic order
+    seen = set()
+    out = []
+    for f in files:
+        if f not in seen:
+            seen.add(f)
+            out.append(f)
+    return out
+
+
+def load_scenarios_aggregate(path: str, config: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
+    """
+    Load scenarios from a single YAML file or from all YAML files under a directory.
+    If directory, combines all 'scenarios' lists into one dict {'scenarios': [...]}
+    and annotates each scenario with '_source_file'.
+    """
+    if os.path.isdir(path):
+        files = _gather_yaml_files_from_dir(path)
+        if not files:
+            raise ValueError(f"No scenario YAML files found in directory: {path}")
+        combined = []
+        for f in files:
+            data = load_scenarios(f, config=config)
+            sc = data.get("scenarios", [])
+            for s in sc:
+                # annotate origin for debugging/reporting
+                s["_source_file"] = f
+            combined.extend(sc)
+        return {"scenarios": combined}
+    # if file, load single
+    if os.path.isfile(path):
+        return load_scenarios(path, config=config)
+    # try glob expansion
+    hits = sorted(glob.glob(path, recursive=True))
+    yaml_hits = [h for h in hits if os.path.isfile(h) and h.lower().endswith((".yml", ".yaml"))]
+    if yaml_hits:
+        combined = []
+        for f in yaml_hits:
+            data = load_scenarios(f, config=config)
+            sc = data.get("scenarios", [])
+            for s in sc:
+                s["_source_file"] = f
+            combined.extend(sc)
+        return {"scenarios": combined}
+    raise ValueError(f"Provided scenarios path is not a file, directory, or matching glob: {path}")
+
+
 def main(scenarios_path: str):
     data = load_scenarios(scenarios_path)
     scenarios = data.get("scenarios", [])
@@ -494,9 +553,11 @@ if __name__ == "__main__":
     parser.add_argument("--scenarios", "-s", help="Path to scenarios YAML", default="scenarios.yaml")
     parser.add_argument("--config", "-c", help="Path to key→value config YAML for $key substitution", default=None)
     args = parser.parse_args()
+    os.environ["REQUESTS_CA_BUNDLE"] = "C:\Program Files\Microsoft SDKs\Azure\CLI2\Lib\site-packages\certifi\cacert.pem"  # disable system CA bundle usage if any
     try:
         cfg = load_config(args.config) if args.config else {}
-        data = load_scenarios(args.scenarios, config=cfg)
+        # support passing either a single file or a directory (or glob)
+        data = load_scenarios_aggregate(args.scenarios, config=cfg)
         scenarios = data.get("scenarios", [])
         total = len(scenarios)
         passed = 0
