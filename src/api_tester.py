@@ -12,7 +12,7 @@ import sys
 import json
 from typing import Any, Dict, List, Tuple, Optional
 import re
-import copy
+from copy import deepcopy
 
 import requests
 import yaml
@@ -26,6 +26,12 @@ _SIMPLE_PLACEHOLDER_RE = re.compile(r"\$([A-Za-z0-9_]+)")
 
 # runtime-only substitution: $var -> value from runtime dict (preserve type when string is exact placeholder)
 _RUNTIME_PLACEHOLDER_RE = re.compile(r"\$([A-Za-z0-9_]+)")
+
+# placeholder patterns for response-derived values
+_RESP_STATUS_RE = re.compile(r"\$resp\[(?P<ref>[^\]]+)\]\.status")
+_RESP_TEXT_RE = re.compile(r"\$resp\[(?P<ref>[^\]]+)\]\.text")
+# jsonpath form: $resp[step].jsonpath($.data.id)
+_RESP_JSONPATH_RE = re.compile(r"\$resp\[(?P<ref>[^\]]+)\]\.jsonpath\((?P<path>[^)]+)\)")
 
 
 def load_config(path: Optional[str]) -> Dict[str, Any]:
@@ -300,46 +306,140 @@ def _capture_from_response(resp: requests.Response, capture_spec: Dict[str, Any]
     return True, (name, val)
 
 
-def run_scenario(scenario: Dict[str, Any], config: Optional[Dict[str, Any]] = None) -> Tuple[bool, Optional[Dict[str, Any]]]:
+def _resolve_resp_ref(ref: str, responses_by_name: dict, responses_by_index: dict, responses_list: list):
+    """Return a requests.Response for ref which may be 'last', an index (1-based) or a step name."""
+    if ref == "last":
+        return responses_list[-1] if responses_list else None
+    # numeric index
+    try:
+        idx = int(ref)
+        return responses_by_index.get(idx)
+    except Exception:
+        return responses_by_name.get(ref)
+
+
+def _substitute_response_placeholders(obj, responses_by_name, responses_by_index, responses_list):
     """
-    Run the given scenario. Supports runtime captures:
-      - Add "capture" array to steps to extract values for later steps.
-    Returns same (True/False, info) as before.
+    Recursively substitute $resp[...] placeholders inside obj.
+    Supports:
+      - $resp[<name|index|last>].status   -> integer
+      - $resp[<...>].text                 -> full response text
+      - $resp[<...>].jsonpath(<jsonpath>) -> first matching value (typed) or joins if many
+    """
+    if isinstance(obj, dict):
+        return {k: _substitute_response_placeholders(v, responses_by_name, responses_by_index, responses_list) for k, v in obj.items()}
+    if isinstance(obj, list):
+        return [_substitute_response_placeholders(v, responses_by_name, responses_by_index, responses_list) for v in obj]
+    if isinstance(obj, str):
+        # full-string exact match for jsonpath/status/text -> preserve type when possible
+        m_j = _RESP_JSONPATH_RE.fullmatch(obj)
+        if m_j:
+            ref = m_j.group("ref")
+            path = m_j.group("path")
+            resp = _resolve_resp_ref(ref, responses_by_name, responses_by_index, responses_list)
+            if not resp:
+                return obj
+            body = _extract_json(resp)
+            if body is None:
+                return obj
+            try:
+                expr = jsonpath_parse(path)
+            except Exception:
+                return obj
+            matches = [m.value for m in expr.find(body)]
+            if not matches:
+                return obj
+            # if single match return typed value
+            if len(matches) == 1:
+                return matches[0]
+            # otherwise return list
+            return matches
+
+        m_s = _RESP_STATUS_RE.fullmatch(obj)
+        if m_s:
+            ref = m_s.group("ref")
+            resp = _resolve_resp_ref(ref, responses_by_name, responses_by_index, responses_list)
+            return resp.status_code if resp else obj
+
+        m_t = _RESP_TEXT_RE.fullmatch(obj)
+        if m_t:
+            ref = m_t.group("ref")
+            resp = _resolve_resp_ref(ref, responses_by_name, responses_by_index, responses_list)
+            return resp.text if resp else obj
+
+        # otherwise do inline replacements (stringified)
+        def _repl_jsonpath(m):
+            ref = m.group("ref")
+            path = m.group("path")
+            resp = _resolve_resp_ref(ref, responses_by_name, responses_by_index, responses_list)
+            if not resp:
+                return m.group(0)
+            body = _extract_json(resp)
+            if body is None:
+                return m.group(0)
+            try:
+                expr = jsonpath_parse(path)
+            except Exception:
+                return m.group(0)
+            matches = [r.value for r in expr.find(body)]
+            if not matches:
+                return m.group(0)
+            # join multiple as comma-separated
+            return ",".join(str(x) for x in matches)
+
+        s = _RESP_JSONPATH_RE.sub(_repl_jsonpath, obj)
+        # replace status/text inline
+        s = _RESP_STATUS_RE.sub(lambda mo: str(_resolve_resp_ref(mo.group("ref"), responses_by_name, responses_by_index, responses_list).status_code) if _resolve_resp_ref(mo.group("ref"), responses_by_name, responses_by_index, responses_list) else mo.group(0), s)
+        s = _RESP_TEXT_RE.sub(lambda mo: (_resolve_resp_ref(mo.group("ref"), responses_by_name, responses_by_index, responses_list).text) if _resolve_resp_ref(mo.group("ref"), responses_by_name, responses_by_index, responses_list) else mo.group(0), s)
+        return s
+    return obj
+
+
+def run_scenario(scenario: Dict[str, Any]) -> Tuple[bool, Optional[Dict[str, Any]]]:
+    """
+    Run the given scenario (dict with 'name' and 'steps').
+    Returns (True, None) on success, or (False, {step_index, step_name, error, response_info}) on failure.
     """
     name = scenario.get("name", "<unnamed>")
     steps = scenario.get("steps", []) or []
     print(f"\n=== Running scenario: {name} ({len(steps)} step(s)) ===")
     session = requests.Session()
-    runtime_vars: Dict[str, Any] = {}  # updated from captures
+
+    # response context storages
+    responses_by_name = {}
+    responses_by_index = {}
+    responses_list = []
+
     for idx, step in enumerate(steps, start=1):
         step_name = step.get("name", f"step-{idx}")
-        # apply runtime substitutions to the step (do not mutate original)
-        step_exec = _substitute_with_runtime(copy.deepcopy(step), runtime_vars)
-        # Note: config substitutions were applied at load-time; if you prefer config-time here, merge config into runtime or call _substitute_in_obj
         print(f"  [{idx}/{len(steps)}] -> {step_name} ... ", end="", flush=True)
+
+        # create a substituted copy of step using previous responses
+        step_to_run = deepcopy(step)
+        step_to_run = _substitute_response_placeholders(step_to_run, responses_by_name, responses_by_index, responses_list)
+
         try:
-            resp = execute_api_call(step_exec, session=session)
+            resp = execute_api_call(step_to_run, session=session)
         except Exception as e:
             print("ERROR")
             return False, {"step_index": idx, "step_name": step_name, "error": f"Request failed: {e}"}
 
-        ok, err = verify_response(resp, step_exec)
+        # store response for later substitutions
+        responses_list.append(resp)
+        responses_by_index[idx] = resp
+        responses_by_name[step_name] = resp
+        responses_by_name["last"] = resp
+
+        ok, err = verify_response(resp, step_to_run)
         if ok:
             print("OK")
-            # process captures (if any) after successful step
-            for capture_spec in (step_exec.get("capture") or []):
-                c_ok, c_res = _capture_from_response(resp, capture_spec)
-                if c_ok:
-                    var_name, var_val = c_res
-                    runtime_vars[var_name] = var_val
-                else:
-                    # capture failure should fail the scenario
-                    _, err_msg = c_res
-                    return False, {"step_index": idx, "step_name": step_name, "error": f"Capture failed for '{capture_spec.get('name')}': {err_msg}"}
             continue
         else:
             print("FAILED")
-            resp_info = {"status_code": resp.status_code, "body_snippet": None}
+            resp_info = {
+                "status_code": resp.status_code,
+                "body_snippet": None
+            }
             try:
                 resp_json = _extract_json(resp)
                 resp_info["body_snippet"] = json.dumps(resp_json, indent=2)[:1000]

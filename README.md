@@ -163,3 +163,18 @@ Run on command line:
           json_assertions:
             - path: "$.meta.timestamp"
               exists: true
+
+
+
+    For our tool.
+
+    we can take as input Account and oter inputs in a CSV file for comprehensive testing
+    we can take an accuont, figure out answers and execute different paths
+    we can fix accounts and scenario and validate the path that is expected to be taken 
+    Performance testing of APIs - create a set of users, who are creating requests and going through the process of approval
+    upload documents perf testing should also be done 
+
+    JSON comparison expected/actual 
+    JSON to tabular format (nested tables - check the vscode extn in DCD)
+    Devpod use 
+    
