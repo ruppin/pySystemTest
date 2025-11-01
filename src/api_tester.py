@@ -13,6 +13,8 @@ import json
 from typing import Any, Dict, List, Tuple, Optional
 import re
 from copy import deepcopy
+import time
+import traceback
 
 import requests
 import yaml
@@ -508,6 +510,92 @@ def load_scenarios_aggregate(path: str, config: Optional[Dict[str, Any]] = None)
     raise ValueError(f"Provided scenarios path is not a file, directory, or matching glob: {path}")
 
 
+def run_scenario_collect(scenario: Dict[str, Any]) -> Tuple[bool, Optional[Dict[str, Any]], Dict[str, Any]]:
+    """
+    Run scenario and return (ok, info_on_failure_or_none, scenario_report).
+    scenario_report contains per-step request/response/verification/timing data.
+    """
+    name = scenario.get("name", "<unnamed>")
+    steps = scenario.get("steps", []) or []
+    session = requests.Session()
+
+    report = {
+        "name": name,
+        "source": scenario.get("_source_file"),
+        "steps": []
+    }
+
+    # response context storages for placeholders
+    responses_by_name = {}
+    responses_by_index = {}
+    responses_list = []
+
+    for idx, step in enumerate(steps, start=1):
+        step_name = step.get("name", f"step-{idx}")
+        step_record: Dict[str, Any] = {"index": idx, "name": step_name, "start": None, "duration_ms": None,
+                                       "request": None, "response": None, "verification": None, "error": None}
+        # prepare substituted step
+        step_to_run = deepcopy(step)
+        step_to_run = _substitute_response_placeholders(step_to_run, responses_by_name, responses_by_index, responses_list)
+
+        # record request-ish info
+        action = step_to_run.get("action", {})
+        step_record["request"] = {
+            "method": (action.get("method") or "GET").upper(),
+            "url": action.get("url"),
+            "headers": action.get("headers"),
+            "params": action.get("params"),
+            "body": action.get("body"),
+            "timeout": action.get("timeout")
+        }
+
+        t0 = time.time()
+        step_record["start"] = t0
+        try:
+            resp = execute_api_call(step_to_run, session=session)
+        except Exception as exc:
+            step_record["duration_ms"] = int((time.time() - t0) * 1000)
+            step_record["error"] = f"Request failed: {exc}\n{traceback.format_exc()}"
+            report["steps"].append(step_record)
+            # return failure info in the same format run_scenario uses
+            return False, {"step_index": idx, "step_name": step_name, "error": str(exc)}, report
+
+        duration_ms = int((time.time() - t0) * 1000)
+        step_record["duration_ms"] = duration_ms
+
+        # store response context
+        responses_list.append(resp)
+        responses_by_index[idx] = resp
+        responses_by_name[step_name] = resp
+        responses_by_name["last"] = resp
+
+        # response snapshot (headers + status + body snippet / json typed if possible)
+        resp_record: Dict[str, Any] = {"status_code": resp.status_code, "headers": dict(resp.headers)}
+        try:
+            body_json = _extract_json(resp)
+            resp_record["json"] = body_json
+            # keep a text snippet too
+            resp_record["text_snippet"] = json.dumps(body_json, indent=2)[:2000] if body_json is not None else (resp.text or "")[:2000]
+        except Exception:
+            resp_record["text_snippet"] = (resp.text or "")[:2000]
+        step_record["response"] = resp_record
+
+        # verification
+        ok, err = verify_response(resp, step_to_run)
+        step_record["verification"] = {"ok": ok, "error": err}
+        report["steps"].append(step_record)
+
+        if not ok:
+            # return similar info as run_scenario on failure
+            resp_info = {
+                "status_code": resp.status_code,
+                "body_snippet": resp_record.get("text_snippet")
+            }
+            return False, {"step_index": idx, "step_name": step_name, "error": err, "response": resp_info}, report
+
+    return True, None, report
+
+
 def main(scenarios_path: str):
     data = load_scenarios(scenarios_path)
     scenarios = data.get("scenarios", [])
@@ -550,33 +638,44 @@ def main(scenarios_path: str):
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Simple API scenario tester (YAML-driven).")
-    parser.add_argument("--scenarios", "-s", help="Path to scenarios YAML", default="scenarios.yaml")
+    parser.add_argument("--scenarios", "-s", help="Path to scenarios YAML or directory", default="scenarios.yaml")
     parser.add_argument("--config", "-c", help="Path to key→value config YAML for $key substitution", default=None)
+    parser.add_argument("--report", "-r", help="Write detailed JSON report to this file (optional)", default=None)
+    parser.add_argument("--report_json", help="Write detailed JSON report to this file (optional)", default=None)
+    parser.add_argument("--report_html", help="Write detailed HTML report to this file (optional)", default=None)
+    parser.add_argument("--verbose", "-v", action="store_true", help="Print per-step report details to console")
     args = parser.parse_args()
-    os.environ["REQUESTS_CA_BUNDLE"] = "C:\Program Files\Microsoft SDKs\Azure\CLI2\Lib\site-packages\certifi\cacert.pem"  # disable system CA bundle usage if any
+    os.environ["REQUESTS_CA_BUNDLE"] = r"C:\Program Files\Microsoft SDKs\Azure\CLI2\Lib\site-packages\certifi\cacert.pem"
+
     try:
         cfg = load_config(args.config) if args.config else {}
-        # support passing either a single file or a directory (or glob)
         data = load_scenarios_aggregate(args.scenarios, config=cfg)
         scenarios = data.get("scenarios", [])
         total = len(scenarios)
         passed = 0
         failed = 0
         failures = []
+        detailed_report = {"scenarios_total": total, "scenarios": []}
 
         for scen in scenarios:
-            ok, info = run_scenario(scen)
+            ok, info, scen_report = run_scenario_collect(scen)
+            detailed_report["scenarios"].append(scen_report)
             if ok:
                 passed += 1
+                if args.verbose:
+                    print(f"Scenario '{scen_report['name']}' PASSED. Steps: {len(scen_report['steps'])}")
             else:
                 failed += 1
                 failures.append({"scenario": scen.get("name"), **(info or {})})
+                if args.verbose:
+                    print(f"Scenario '{scen_report['name']}' FAILED at step {info.get('step_index')}: {info.get('error')}")
 
         # Summary
         print("\n=== Summary ===")
         print(f"Scenarios executed: {total}")
         print(f"Passed: {passed}")
         print(f"Failed: {failed}")
+
         if failures:
             print("\nFailures detail:")
             for f in failures:
@@ -586,12 +685,22 @@ if __name__ == "__main__":
                 err = f.get("error")
                 print(f"  Step #{si}: {sn}")
                 print(f"  Reason: {err}")
-                resp = f.get("response")
-                if resp:
-                    print(f"  HTTP status: {resp.get('status_code')}")
-                    body = resp.get("body_snippet")
-                    if body:
-                        print(f"  Response body (snippet): {body}")
+
+        # write JSON report if requested
+        if args.report or args.report_json:
+            try:
+                with open(args.report_json, "w", encoding="utf-8") as fh:
+                    json.dump(detailed_report, fh, indent=2, ensure_ascii=False)
+                print(f"Wrote JSON report to {args.report_json}")
+            except Exception as e:
+                print(f"Failed to write report to {args.report_json}: {e}")
+
+        if args.report_html:
+            from reporting import generate_html_report
+
+            generate_html_report(detailed_report, args.report_html)
+            print(f"Wrote HTML report to {args.report_html}")
+
         sys.exit(0 if failed == 0 else 2)
     except Exception as exc:
         print(f"Fatal error: {exc}")

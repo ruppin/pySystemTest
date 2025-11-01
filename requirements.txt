@@ -4,3 +4,4 @@ PyYAML>=6.0
 jsonpath-ng>=1.5.3
 pytest>=7.0
 requests-mock>=1.9
+Jinja2>=3.0
