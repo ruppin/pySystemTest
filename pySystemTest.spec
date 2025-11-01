@@ -1,4 +1,10 @@
 # -*- mode: python ; coding: utf-8 -*-
+import os
+import sys
+import certifi
+
+# Get certifi's SSL cert path
+cert_path = os.path.join(certifi.__path__[0], 'cacert.pem')
 
 block_cipher = None
 
@@ -7,13 +13,19 @@ a = Analysis(
     pathex=['src'],
     binaries=[],
     datas=[
-        ('src/*.py', '.'),  # Include all Python files from src
+        (cert_path, '.'),  # Include certifi's SSL certificate
+        ('src/*.py', '.'),
+        ('config/cacert.pem', 'config'),  # Include your local cacert.pem
     ],
     hiddenimports=[
         'yaml',
         'jsonpath_ng',
         'jinja2',
-        'requests'
+        'requests',
+        '_ssl',             # Add SSL modules explicitly
+        'ssl',
+        'cryptography',
+        'certifi'
     ],
     hookspath=[],
     hooksconfig={},
@@ -29,7 +41,7 @@ pyz = PYZ(a.pure, a.zipped_data, cipher=block_cipher)
 
 exe = EXE(
     pyz,
-    a.scripts, 
+    a.scripts,
     a.binaries,
     a.zipfiles,
     a.datas,
