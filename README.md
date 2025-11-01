@@ -177,4 +177,31 @@ Run on command line:
     JSON comparison expected/actual 
     JSON to tabular format (nested tables - check the vscode extn in DCD)
     Devpod use 
-    
+
+
+    How to use:
+    Run and produce a detailed JSON report file:
+PowerShell:
+python api_tester.py -s "scenarios_dir" -c scenarios_config.yaml -r detailed_report.json --verbose
+The generated report (detailed_report.json) contains:
+scenarios_total
+scenarios: list of scenario entries:
+name, source, steps[]
+for each step: index, name, start (timestamp), duration_ms, request {method,url,headers,body}, response {status_code, headers, json, text_snippet}, verification {ok,error}, error (if any)
+
+
+# single scenarios file
+python .\src\api_tester.py -s .\scenarios.yaml -c .\scenarios_config.yaml --report_html .\reports\report.html -v
+
+# directory (recursively combine all YAML files under the dir)
+python .\src\api_tester.py -s .\scenarios_dir\ -c .\scenarios_config.yaml --report_html .\reports\report.html -v
+
+# open in default browser (PowerShell)
+Start-Process .\reports\report.html
+
+Notes
+
+-s accepts a file, directory, or glob pattern.
+-c is optional config for $key substitution.
+-v prints per-step info to console.
+Ensure src\reporting.py exists (the HTML generator) and Jinja2 is installed.
