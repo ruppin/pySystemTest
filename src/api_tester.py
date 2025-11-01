@@ -692,6 +692,36 @@ def main(scenarios_path: str):
 
 def main_cli():
     """Main CLI entry point for both script and packaged versions."""
+    # SSL cert handling - check multiple locations
+    if getattr(sys, 'frozen', False):
+        # If running as compiled executable
+        bundle_dir = getattr(sys, '_MEIPASS', os.path.abspath(os.path.dirname(__file__)))
+        cert_locations = [
+            os.path.join(bundle_dir, 'cacert.pem'),  # inside exe
+            os.path.join(os.path.dirname(bundle_dir), 'config', 'cacert.pem'),  # config folder relative to exe
+            os.path.abspath(os.path.join('config', 'cacert.pem')),  # config folder in current dir
+        ]
+    else:
+        # Development mode
+        project_root = os.path.abspath(os.path.join(os.path.dirname(__file__), '..'))
+        cert_locations = [
+            os.path.join(project_root, 'config', 'cacert.pem'),  # project config folder
+            os.path.abspath(os.path.join('config', 'cacert.pem'))  # config folder in current dir
+        ]
+
+    # Use first existing cert file
+    cert_path = None
+    for loc in cert_locations:
+        if os.path.isfile(loc):
+            cert_path = loc
+            break
+
+    if cert_path:
+        os.environ['REQUESTS_CA_BUNDLE'] = cert_path
+        os.environ['SSL_CERT_FILE'] = cert_path
+    else:
+        print("Warning: SSL certificate file not found in known locations")
+
     parser = argparse.ArgumentParser(description="Simple API scenario tester (YAML-driven).")
     parser.add_argument("--scenarios", "-s", help="Path to scenarios YAML or directory", default="scenarios.yaml")
     parser.add_argument("--config", "-c", help="Path to key→value config YAML for $key substitution", default=None)
