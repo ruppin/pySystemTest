@@ -2,6 +2,12 @@
 import os
 import sys
 import certifi
+from PyInstaller.utils.hooks import collect_all, collect_dynamic_libs
+
+# Get SSL DLLs
+binaries = []
+for dll in collect_dynamic_libs('openssl'):
+    binaries.append(dll)
 
 # Get certifi's SSL cert path
 cert_path = os.path.join(certifi.__path__[0], 'cacert.pem')
@@ -11,7 +17,7 @@ block_cipher = None
 a = Analysis(
     ['src\\__main__.py'],
     pathex=['src'],
-    binaries=[],
+    binaries=binaries,  # Add OpenSSL DLLs
     datas=[
         (cert_path, '.'),  # Include certifi's SSL certificate
         ('src/*.py', '.'),  # This now includes ssl_hook.py from src directory
