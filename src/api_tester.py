@@ -138,6 +138,26 @@ def execute_api_call(step: Dict[str, Any], session: Optional[requests.Session] =
     allow_redirects = action.get("allow_redirects", True)
 
     s = session or requests.Session()
+    
+    # Add debugging for HTTPS requests
+    if url.startswith('https://'):
+        print(f"\nSSL Debug for request to {url}:")
+        print(f"Verify setting: {verify}")
+        if isinstance(verify, str):
+            print(f"Custom CA bundle: {verify}")
+            if not os.path.exists(verify):
+                print(f"Warning: CA bundle file not found: {verify}")
+        print(f"Current cert file: {os.environ.get('REQUESTS_CA_BUNDLE', 'not set')}")
+    
+    try:
+        resp = s.request(method, url, **kwargs)
+        return resp
+    except requests.exceptions.SSLError as e:
+        print("\nSSL Error Details:")
+        print(f"Error type: {type(e).__name__}")
+        print(f"Error message: {str(e)}")
+        print(f"Original error: {e.__cause__}")
+        raise
 
     kwargs = {"headers": headers, "timeout": timeout, "allow_redirects": allow_redirects}
     if body is not None:
@@ -670,78 +690,114 @@ def run_scenario_collect(scenario: Dict[str, Any], test_data: Optional[Dict[str,
     return True, None, report
 
 
-def main(scenarios_path: str):
-    data = load_scenarios(scenarios_path)
-    scenarios = data.get("scenarios", [])
-    total = len(scenarios)
-    passed = 0
-    failed = 0
-    failures = []
+def diagnose_ssl_setup():
+    """Collect and return SSL configuration diagnostic information."""
+    import sys
+    import os
+    import ssl
+    import requests.certs
+    import certifi
+    
+    diag = []
+    diag.append("=== SSL Configuration Diagnostics ===")
+    
+    # Python SSL setup
+    diag.append(f"Python version: {sys.version}")
+    try:
+        diag.append(f"SSL version: {ssl.OPENSSL_VERSION}")
+        diag.append(f"SSL default verify paths: {ssl.get_default_verify_paths()}")
+    except Exception as e:
+        diag.append(f"Error getting SSL version: {e}")
+    
+    # Environment variables
+    ssl_env_vars = [
+        'REQUESTS_CA_BUNDLE',
+        'SSL_CERT_FILE',
+        'SSL_CERT_DIR',
+        'CURL_CA_BUNDLE'
+    ]
+    diag.append("\nSSL Environment Variables:")
+    for var in ssl_env_vars:
+        diag.append(f"{var}: {os.environ.get(var, 'not set')}")
+    
+    # Cert file locations
+    diag.append("\nCertificate File Locations:")
+    cert_locations = [
+        ('requests.certs', requests.certs.where()),
+        ('certifi', certifi.where()),
+    ]
+    for source, path in cert_locations:
+        exists = os.path.exists(path) if path else False
+        readable = os.access(path, os.R_OK) if exists else False
+        diag.append(f"{source}: {path}")
+        diag.append(f"  Exists: {exists}")
+        diag.append(f"  Readable: {readable}")
+        if exists and readable:
+            try:
+                size = os.path.getsize(path)
+                diag.append(f"  Size: {size} bytes")
+            except Exception as e:
+                diag.append(f"  Error getting size: {e}")
+    
+    # Bundle directory for frozen executables
+    if getattr(sys, 'frozen', False):
+        diag.append("\nFrozen executable info:")
+        bundle_dir = getattr(sys, '_MEIPASS', 'not found')
+        diag.append(f"Bundle directory: {bundle_dir}")
+        if bundle_dir != 'not found':
+            cert_in_bundle = os.path.join(bundle_dir, 'cacert.pem')
+            diag.append(f"Cert in bundle: {cert_in_bundle}")
+            diag.append(f"  Exists: {os.path.exists(cert_in_bundle)}")
+    
+    return "\n".join(diag)
 
-    for scen in scenarios:
-        ok, info = run_scenario(scen)
-        if ok:
-            passed += 1
-        else:
-            failed += 1
-            failures.append({"scenario": scen.get("name"), **(info or {})})
-
-    # Summary
-    print("\n=== Summary ===")
-    print(f"Scenarios executed: {total}")
-    print(f"Passed: {passed}")
-    print(f"Failed: {failed}")
-    if failures:
-        print("\nFailures detail:")
-        for f in failures:
-            print(f"- Scenario: {f.get('scenario')}")
-            si = f.get("step_index")
-            sn = f.get("step_name")
-            err = f.get("error")
-            print(f"  Step #{si}: {sn}")
-            print(f"  Reason: {err}")
-            resp = f.get("response")
-            if resp:
-                print(f"  HTTP status: {resp.get('status_code')}")
-                body = resp.get("body_snippet")
-                if body:
-                    print(f"  Response body (snippet): {body}")
-    # exit code
-    sys.exit(0 if failed == 0 else 2)
-
-
+# Modify main_cli() to include diagnostics
 def main_cli():
     """Main CLI entry point for both script and packaged versions."""
-    # SSL cert handling - check multiple locations
+    # Add verbose SSL diagnostics at startup
+    print(diagnose_ssl_setup())
+    
+    # SSL cert handling - check multiple locations with logging
     if getattr(sys, 'frozen', False):
-        # If running as compiled executable
+        print("\nSearching for SSL certificates:")
         bundle_dir = getattr(sys, '_MEIPASS', os.path.abspath(os.path.dirname(__file__)))
         cert_locations = [
-            os.path.join(bundle_dir, 'cacert.pem'),  # inside exe
-            os.path.join(os.path.dirname(bundle_dir), 'config', 'cacert.pem'),  # config folder relative to exe
-            os.path.abspath(os.path.join('config', 'cacert.pem')),  # config folder in current dir
+            os.path.join(bundle_dir, 'cacert.pem'),
+            os.path.join(os.path.dirname(bundle_dir), 'config', 'cacert.pem'),
+            os.path.abspath(os.path.join('config', 'cacert.pem')),
         ]
     else:
-        # Development mode
         project_root = os.path.abspath(os.path.join(os.path.dirname(__file__), '..'))
         cert_locations = [
-            os.path.join(project_root, 'config', 'cacert.pem'),  # project config folder
-            os.path.abspath(os.path.join('config', 'cacert.pem'))  # config folder in current dir
+            os.path.join(project_root, 'config', 'cacert.pem'),
+            os.path.abspath(os.path.join('config', 'cacert.pem'))
         ]
 
-    # Use first existing cert file
+    # Check each location with detailed logging
     cert_path = None
     for loc in cert_locations:
+        print(f"Checking: {loc}")
         if os.path.isfile(loc):
-            cert_path = loc
-            break
+            try:
+                if os.access(loc, os.R_OK):
+                    size = os.path.getsize(loc)
+                    print(f"  Found valid cert file (size: {size} bytes)")
+                    cert_path = loc
+                    break
+                else:
+                    print("  File exists but is not readable")
+            except Exception as e:
+                print(f"  Error checking file: {e}")
+        else:
+            print("  Not found")
 
     if cert_path:
+        print(f"\nUsing certificate file: {cert_path}")
         os.environ['REQUESTS_CA_BUNDLE'] = cert_path
         os.environ['SSL_CERT_FILE'] = cert_path
     else:
-        print("Warning: SSL certificate file not found in known locations")
-
+        print("\nWarning: No valid SSL certificate file found!")
+        
     parser = argparse.ArgumentParser(description="Simple API scenario tester (YAML-driven).")
     parser.add_argument("--scenarios", "-s", help="Path to scenarios YAML or directory", default="scenarios.yaml")
     parser.add_argument("--config", "-c", help="Path to key→value config YAML for $key substitution", default=None)
@@ -793,21 +849,36 @@ def main_cli():
                 print(f"  Step #{si}: {sn}")
                 print(f"  Reason: {err}")
 
-        # write JSON report if requested
+        # Always show brief summary on console
+        print("\n=== Execution Summary ===")
+        print(f"Total scenarios: {total}")
+        print(f"Duration: {sum(sum(s['duration_ms'] for s in scen['steps']) for scen in detailed_report['scenarios'])/1000:.2f} seconds")
+        print(f"✓ Passed: {passed}")
+        print(f"✗ Failed: {failed}")
+
+        if failures:
+            print("\nFailures:")
+            for f in failures:
+                print(f"✗ {f.get('scenario')}: Step {f.get('step_index')} - {f.get('error')}")
+
+        # Generate detailed reports if requested
         if args.report or args.report_json:
             try:
                 with open(args.report_json, "w", encoding="utf-8") as fh:
                     json.dump(detailed_report, fh, indent=2, ensure_ascii=False)
-                print(f"Wrote JSON report to {args.report_json}")
+                print(f"\nDetailed JSON report written to: {args.report_json}")
             except Exception as e:
-                print(f"Failed to write report to {args.report_json}: {e}")
+                print(f"Failed to write JSON report: {e}")
 
         if args.report_html:
             from reporting import generate_html_report
+            try:
+                generate_html_report(detailed_report, args.report_html)
+                print(f"HTML report written to: {args.report_html}")
+            except Exception as e:
+                print(f"Failed to write HTML report: {e}")
 
-            generate_html_report(detailed_report, args.report_html)
-            print(f"Wrote HTML report to {args.report_html}")
-
+        # Exit with appropriate code
         sys.exit(0 if failed == 0 else 2)
     except Exception as exc:
         print(f"Fatal error: {exc}")
