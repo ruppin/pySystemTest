@@ -185,6 +185,8 @@ def verify_response(response: requests.Response, step: Dict[str, Any]) -> Tuple[
         - exists: true/false  -> assert presence/absence of the path
         - not_null: true     -> assert path exists and no matched value is null
         - contains: value    -> for arrays/objects, assert value is contained
+        - contains_string: check if string value contains substring
+        - not_equals: check if value is not equal to expected
     Returns (True, None) on success, (False, message) on failure.
     """
     verification = step.get("verification", {})
@@ -226,6 +228,24 @@ def verify_response(response: requests.Response, step: Dict[str, Any]) -> Tuple[
                     return False, f"JSON path '{path}' not found (not_null asserted)"
                 if any(m is None for m in matches):
                     return False, f"JSON path '{path}' contains null value(s): {matches!r}"
+                continue
+
+            # New: contains_string check
+            if "contains_string" in assertion:
+                substring = str(assertion["contains_string"])
+                if not matches:
+                    return False, f"JSON path '{path}' not found (contains_string asserted)"
+                if not any(isinstance(m, str) and substring in str(m) for m in matches):
+                    return False, f"JSON path '{path}' values do not contain substring '{substring}', values: {matches!r}"
+                continue
+
+            # New: not_equals check
+            if "not_equals" in assertion:
+                expected = assertion["not_equals"]
+                if not matches:
+                    return False, f"JSON path '{path}' not found (not_equals asserted)"
+                if any(_match_expected(m, expected) for m in matches):
+                    return False, f"JSON path '{path}' should not equal {expected!r} but found matching value"
                 continue
 
             # contains check (for arrays or objects)

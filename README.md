@@ -213,3 +213,208 @@ python -m pip install -r requirements.txt
 
 # Build executable
 pyinstaller pySystemTest.spec
+
+
+additional assertions added to jsonassertions:
+
+scenarios:
+  - name: "Advanced JSON assertions"
+    steps:
+      - name: "Check response with various assertions"
+        action:
+          method: GET
+          url: "https://api.example.com/data"
+        verification:
+          status_code: 200
+          json_assertions:
+            # Check string contains substring
+            - path: "$.message"
+              contains_string: "success"  # passes if message contains "success"
+
+            # Check value is not equal
+            - path: "$.status"
+              not_equals: "error"  # passes if status is anything except "error"
+
+            # Combine with existing checks
+            - path: "$.data.items[*].type"
+              not_null: true
+              not_equals: "deleted"  # items must exist, be non-null, and not be "deleted"
+
+            # Check response field contains text
+            - path: "$.description"
+              exists: true
+              contains_string: "valid"  # description must exist and contain "valid"
+
+            # Array element check
+            - path: "$.tags[*]"
+              not_equals: "obsolete"  # fails if any tag is "obsolete"
+              contains_string: "v2"  # passes if any tag contains "v2"
+
+Key features added:
+
+contains_string: Checks if string value contains a substring (case-sensitive)
+not_equals: Ensures value does not equal the specified value
+Can combine with existing not_null and exists checks
+Works with array values (any match principle)
+The assertions are evaluated in order:
+
+exists (if specified)
+not_null (if specified)
+contains_string (if specified)
+not_equals (if specified)
+contains (if specified)
+expected_value (if specified)
+
+
+Response deep copy usage: 
+# Example usage in scenarios.yaml to extract specific array elements:
+scenarios:
+  - name: "Extract from array example"
+    steps:
+      - name: "Get array response"
+        action:
+          method: GET
+          url: "$base_url/users"
+        verification:
+          status_code: 200
+          json_assertions:
+            # Verify array has items
+            - path: "$.users[*]"
+              exists: true
+
+      - name: "Use specific array elements"
+        action:
+          method: POST
+          url: "$base_url/process"
+          body:
+            # Get first user's id
+            first_user_id: "$resp[last].jsonpath($.users[0].id)"
+            # Get all user ids
+            all_ids: "$resp[last].jsonpath($.users[*].id)"
+            # Get user with specific criteria
+            admin_user: "$resp[last].jsonpath($.users[?(@.role=='admin')])"
+            # Get specific field from filtered users
+            premium_emails: "$resp[last].jsonpath($.users[?(@.type=='premium')].email)"
+
+    Common JSONPath patterns for array handling:
+
+    # Examples of JSONPath expressions for different array scenarios:
+
+# 1. Get by index
+$.users[0]                    # First user
+$.users[-1]                   # Last user
+$.users[1:3]                 # Users at index 1 and 2
+
+# 2. Get specific fields
+$.users[*].id                # All user IDs
+$.users[*].{id: id, name: name}  # Select multiple fields
+
+# 3. Filter arrays
+$.users[?(@.active==true)]   # All active users
+$.users[?(@.age > 25)]       # Users over 25
+$.users[?(@.role=='admin')]  # Users with role admin
+
+# 4. Complex filters
+$.users[?(@.type=='premium' && @.active==true)].email  # Emails of active premium users
+$.orders[?(@.items[*].price > 100)]                    # Orders with any item over 100
+
+Example implementation in your scenarios:
+
+scenarios:
+  - name: "Complex array handling"
+    steps:
+      - name: "Get users list"
+        action:
+          method: GET
+          url: "https://api.example.com/users"
+        verification:
+          status_code: 200
+          # Store response for next step
+
+      - name: "Process specific users"
+        action:
+          method: POST
+          url: "https://api.example.com/process"
+          body:
+            # Different ways to extract array data
+            first_user: "$resp[last].jsonpath($.users[0])"
+            active_admins: "$resp[last].jsonpath($.users[?(@.role=='admin' && @.active==true)])"
+            premium_user_ids: "$resp[last].jsonpath($.users[?(@.type=='premium')].id)"
+            # Get specific user by compound filter
+            target_user: "$resp[last].jsonpath($.users[?(@.email=='test@example.com')])[0]"
+        verification:
+          status_code: 200
+          json_assertions:
+            - path: "$.processed_ids"
+              contains: "$resp[1].jsonpath($.users[0].id)"  # Reference first user's ID
+
+
+              When the response contains nested arrays or complex objects, you can:
+
+Use [*] to iterate all array elements
+Use [?()] for filtering with conditions
+Chain paths to navigate nested structures
+Use array indices to get specific elements
+Use multiple assertions to verify different parts of the array
+The JSONPath expressions are evaluated at runtime and return:
+
+Single value if exactly one match
+Array of values if multiple matches
+Original placeholder if no matches found
+
+Is there a way to achieve contains a specific substring , not equals to a certain string value  and not null check when checking array elements in response deep copy 
+Yes, you can check array elements for these conditions using JSONPath expressions combined with response placeholders. Here's how to do it:
+
+Key JSONPath patterns for array filtering:
+
+Contains substring: [?(@.field contains 'substring')]
+Not equals: [?(@.field != 'value')]
+Not null: [?(@.field != null)]
+You can also combine conditions:
+
+Array filtering is possible in json assertions too: 
+scenarios:
+  - name: "Array element checks"
+    steps:
+      - name: "Get users list"
+        action:
+          method: GET
+          url: "$base_url/users"
+        verification:
+          status_code: 200
+          json_assertions:
+            # Check for substring in array elements
+            - path: "$.users[*].name"
+              contains_string: "admin"     # any user name contains "admin"
+            
+            # Check for not equals in array elements
+            - path: "$.users[*].status"
+              not_equals: "deleted"        # no user has status "deleted"
+            
+            # Check for not null in array elements
+            - path: "$.users[*].email"
+              not_null: true              # all user emails must be non-null
+
+      - name: "Use filtered array values"
+        action:
+          method: POST
+          url: "$base_url/process"
+          body:
+            # Extract specific array elements using response deep copy
+            admin_users: "$resp[last].jsonpath($.users[?(@.name contains 'admin')])"
+            active_users: "$resp[last].jsonpath($.users[?(@.status != 'deleted')])"
+            with_email: "$resp[last].jsonpath($.users[?(@.email != null)])"
+            
+            # Combine conditions
+            valid_admins: "$resp[last].jsonpath($.users[?(@.name contains 'admin' && @.status != 'deleted' && @.email != null)])"
+
+    The key points:
+
+Use contains_string to check if any array element contains a substring
+Use not_equals to ensure no array element matches a value
+Use not_null to verify all elements are non-null
+When extracting elements in subsequent steps, use JSONPath filters with:
+contains for substring check
+!= for not equals
+!= null for not null check
+All these checks work with the existing _substitute_response_placeholders() function in your code
