@@ -149,15 +149,7 @@ def execute_api_call(step: Dict[str, Any], session: Optional[requests.Session] =
                 print(f"Warning: CA bundle file not found: {verify}")
         print(f"Current cert file: {os.environ.get('REQUESTS_CA_BUNDLE', 'not set')}")
     
-    try:
-        resp = s.request(method, url, **kwargs)
-        return resp
-    except requests.exceptions.SSLError as e:
-        print("\nSSL Error Details:")
-        print(f"Error type: {type(e).__name__}")
-        print(f"Error message: {str(e)}")
-        print(f"Original error: {e.__cause__}")
-        raise
+    
 
     kwargs = {"headers": headers, "timeout": timeout, "allow_redirects": allow_redirects}
     if body is not None:
@@ -177,8 +169,16 @@ def execute_api_call(step: Dict[str, Any], session: Optional[requests.Session] =
         elif isinstance(auth, dict) and auth.get("type") == "basic":
             kwargs["auth"] = (auth.get("user"), auth.get("pass"))
 
-    resp = s.request(method, url, **kwargs)
-    return resp
+    
+    try:
+        resp = s.request(method, url, **kwargs)
+        return resp
+    except requests.exceptions.SSLError as e:
+        print("\nSSL Error Details:")
+        print(f"Error type: {type(e).__name__}")
+        print(f"Error message: {str(e)}")
+        print(f"Original error: {e.__cause__}")
+        raise
 
 
 def _extract_json(response: requests.Response) -> Any:
