@@ -773,6 +773,12 @@ def main_cli():
             os.path.abspath(os.path.join('config', 'cacert.pem'))
         ]
 
+    ###  override with local certs for now TBD to be removed
+    project_root = os.path.abspath(os.path.join(os.path.dirname(__file__), '..'))
+    cert_locations = [
+            os.path.join(project_root, 'config', 'cacert.pem'),
+            os.path.abspath(os.path.join('config', 'cacert.pem'))
+        ]
     # Check each location with detailed logging
     cert_path = None
     for loc in cert_locations:
