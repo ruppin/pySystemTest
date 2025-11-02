@@ -2,32 +2,20 @@
 import os
 import sys
 import certifi
-from PyInstaller.utils.hooks import collect_all
 
 # Get certifi's SSL cert path
 cert_path = os.path.join(certifi.__path__[0], 'cacert.pem')
-
-# Collect all SSL-related packages
-ssl_datas = []
-ssl_binaries = []
-ssl_hiddenimports = []
-for pkg in ['certifi', 'cryptography', 'OpenSSL']:
-    data, binaries, hiddenimports = collect_all(pkg)
-    ssl_datas.extend(data)
-    ssl_binaries.extend(binaries)
-    ssl_hiddenimports.extend(hiddenimports)
 
 block_cipher = None
 
 a = Analysis(
     ['src\\__main__.py'],
     pathex=['src'],
-    binaries=ssl_binaries,  # Add SSL binaries
+    binaries=[],
     datas=[
         (cert_path, '.'),  # Include certifi's SSL certificate
-        ('src/*.py', '.'),
+        ('src/*.py', '.'),  # This now includes ssl_hook.py from src directory
         ('config/cacert.pem', 'config'),  # Include your local cacert.pem
-        *ssl_datas,  # Add SSL package data
     ],
     hiddenimports=[
         'yaml',
@@ -37,13 +25,11 @@ a = Analysis(
         '_ssl',
         'ssl',
         'cryptography',
-        'certifi',
-        'OpenSSL',
-        *ssl_hiddenimports,  # Add SSL package imports
+        'certifi'
     ],
     hookspath=[],
     hooksconfig={},
-    runtime_hooks=['ssl_hook.py'],  # Add the SSL runtime hook
+    runtime_hooks=['src/ssl_hook.py'],  # Updated path to ssl_hook.py
     excludes=[],
     win_no_prefer_redirects=False,
     win_private_assemblies=False,
